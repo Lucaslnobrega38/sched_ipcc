@@ -6,7 +6,7 @@
  * Defines x86 CPU feature bits
  */
 // 23 incrementado
-#define NCAPINTS			23	   /* N 32-bit words worth of info */
+#define NCAPINTS			22	   /* N 32-bit words worth of info */
 #define NBUGINTS			2	   /* N 32-bit bug flags */
 
 /*
@@ -17,9 +17,6 @@
  * When adding new features here that depend on other features,
  * please update the table in kernel/cpu/cpuid-deps.c as well.
  */
-
-/* Intel-defined CPU features, CPUID level 0x00000001 (EDX), word 0 */
-#define X86_FEATURE_HRESET		(XX*32+22)
 
 #define X86_FEATURE_FPU			( 0*32+ 0) /* "fpu" Onboard FPU */
 #define X86_FEATURE_VME			( 0*32+ 1) /* "vme" Virtual Mode Extensions */
@@ -521,7 +518,7 @@
 #define X86_FEATURE_X2AVIC_EXT		(21*32+20) /* AMD SVM x2AVIC support for 4k vCPUs */
 
 /* Intel-defined CPU features, CPUID level 0x00000007:1 (EAX), word 18 */
-#define X86_FEATURE_HRESET	(22*32+22) /* HRESET instruction */
+#define X86_FEATURE_HRESET	(12*32+22) /* HRESET instruction */
 
 /*
  * BUG word(s)

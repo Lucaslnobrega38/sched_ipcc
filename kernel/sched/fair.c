@@ -58,6 +58,10 @@
 #include "stats.h"
 #include "autogroup.h"
 
+#ifdef CONFIG_IPC_CLASSES
+#define NR_IPC_CLASSES  4  /* classes 0-3 do Intel Thread Director */
+#endif
+
 /*
  * The initial- and re-scaling of tunables is configurable
  *
@@ -7744,7 +7748,7 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 
 	return best_cpu;
 }
-
+/*
 static int compute_ipcc_score(struct sched_group *sg) 
 {
     int score = 0;
@@ -7754,6 +7758,7 @@ static int compute_ipcc_score(struct sched_group *sg)
     }
     return score;
 }
+*/
 
 static inline bool asym_fits_cpu(unsigned long util,
 				 unsigned long util_min,

@@ -6,7 +6,7 @@
  * Defines x86 CPU feature bits
  */
 // 23 incrementado
-#define NCAPINTS			23	   /* N 32-bit words worth of info */
+#define NCAPINTS			22	   /* N 32-bit words worth of info */
 #define NBUGINTS			2	   /* N 32-bit bug flags */
 
 /*
@@ -516,7 +516,7 @@
 #define X86_FEATURE_X2AVIC_EXT		(21*32+20) /* AMD SVM x2AVIC support for 4k vCPUs */
 
 /* Intel-defined CPU features, CPUID level 0x00000007:1 (EAX), word 18 */
-#define X86_FEATURE_HRESET	(22*32+22) /* HRESET instruction */
+#define X86_FEATURE_HRESET	(12*32+22) /* HRESET instruction */
 
 /*
  * BUG word(s)
