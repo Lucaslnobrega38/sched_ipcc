@@ -98,16 +98,22 @@ void intel_hfi_update_ipcc(struct task_struct *curr) {
     /* lê o MSR que o ITD atualiza com a classe da thread atual */
     rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
     
-    curr->ipcc_tmp = msr & ITD_CLASS_MASK;
+    curr->ipcc_prev = msr & ITD_CLASS_MASK;
     
-    /* confirmação: só aceita a classe se estável por N ticks */
-    if (curr->ipcc_tmp == curr->ipcc_prev)
-        curr->ipcc = curr->ipcc_tmp;
+
+    curr->ipcc = curr->ipcc_prev;
 }
 
-int intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu) {
-    struct hfi_cpu_data *data = per_cpu_ptr(hfi_instance.table, cpu);
-    return data->ipcc_perf[ipcc];
+int intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
+{
+	struct hfi_cpu_info *info = &per_cpu(hfi_cpu_info, cpu);
+	struct hfi_cpu_data *caps;
+
+	if (!info->hfi_instance || !info->hfi_instance->data)
+		return 0;
+
+	caps = info->hfi_instance->data + info->index * hfi_features.cpu_stride;
+	return caps->ipcc_perf[ipcc];
 }
 
 /**
@@ -732,6 +738,15 @@ void __init intel_hfi_init(void)
 	 * starts, hence we can not miss BIND/UNBIND events when applications
 	 * add/remove thermal multicast group to/from a netlink socket.
 	 */
+
+	register_syscore(&hfi_pm);
+
+	/* ITD: detect number of IPC classes */
+	if (cpu_feature_enabled(X86_FEATURE_ITD)) {
+		/* nr_classes virá do CPUID se você adicionar o campo em hfi_features */
+		pr_info("Intel Thread Director detected\n");
+	}
+
 	if (thermal_genl_register_notifier(&hfi_thermal_nb))
 		goto err_nl_notif;
 
@@ -753,11 +768,3 @@ err_nomem:
 }
 
 
-if (cpu_feature_enabled(X86_FEATURE_ITD)) {
-    union cpuid6_ecx ecx;
-
-    ecx.full = cpuid_ecx(CPUID_HFI_LEAF);
-    hfi_features.nr_classes = ecx.split.nr_classes; 
-} else {
-    hfi_features.nr_classes = 1;
-}

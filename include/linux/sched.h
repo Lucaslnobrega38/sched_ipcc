@@ -838,7 +838,7 @@ struct task_struct {
 #ifdef CONFIG_IPC_CLASSES
 
 	unsigned short ipcc;      // classe atual
-    unsigned short ipcc_tmp;   // classe candidata
+    unsigned short ipcc_prev;   // classe candidata
 
 
 #endif
