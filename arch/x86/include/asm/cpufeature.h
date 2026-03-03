@@ -35,8 +35,9 @@ enum cpuid_leafs
 	CPUID_8000_001F_EAX,
 	CPUID_8000_0021_EAX,
 	CPUID_LNX_5,
-	CPUID_7_1_EAX_2,   /* word 22 — Intel CPUID 0x7:1 EAX (segunda parte) */
-	NR_CPUID_WORDS,    /* agora = 23, igual ao NCAPINTS */
+	
+
+	NR_CPUID_WORDS,    
 };
 
 extern const char * const x86_cap_flags[NCAPINTS*32];

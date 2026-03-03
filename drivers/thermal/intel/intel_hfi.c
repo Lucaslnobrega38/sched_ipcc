@@ -87,8 +87,8 @@ struct hfi_cpu_data {
 	u8	perf_cap;
 	u8	ee_cap;
 
-	u8 ipcc_perf[NR_ITD_CLASSES];  
-    u8 ipcc_ee[NR_ITD_CLASSES];  
+	u8 ipcc_perf[NR_HFI_ITD_CLASSES];  
+    u8 ipcc_ee[NR_HFI_ITD_CLASSES];  
 
 } __packed;
 
