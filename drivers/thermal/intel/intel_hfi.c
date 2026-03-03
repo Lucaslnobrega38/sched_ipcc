@@ -83,38 +83,6 @@ union cpuid6_edx {
  * Capabilities of a logical processor in the HFI table. These capabilities are
  * unitless.
  */
-struct hfi_cpu_data {
-	u8	perf_cap;
-	u8	ee_cap;
-
-	u8 ipcc_perf[NR_HFI_ITD_CLASSES];  
-    u8 ipcc_ee[NR_HFI_ITD_CLASSES];  
-
-} __packed;
-
-void intel_hfi_update_ipcc(struct task_struct *curr) {
-    u64 msr;
-    
-    /* lê o MSR que o ITD atualiza com a classe da thread atual */
-    rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
-    
-    curr->ipcc_prev = msr & ITD_CLASS_MASK;
-    
-
-    curr->ipcc = curr->ipcc_prev;
-}
-
-int intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
-{
-	struct hfi_cpu_info *info = &per_cpu(hfi_cpu_info, cpu);
-	struct hfi_cpu_data *caps;
-
-	if (!info->hfi_instance || !info->hfi_instance->data)
-		return 0;
-
-	caps = info->hfi_instance->data + info->index * hfi_features.cpu_stride;
-	return caps->ipcc_perf[ipcc];
-}
 
 /**
  * struct hfi_hdr - Header of the HFI table
@@ -739,6 +707,9 @@ void __init intel_hfi_init(void)
 	 * add/remove thermal multicast group to/from a netlink socket.
 	 */
 
+	 if (thermal_genl_register_notifier(&hfi_thermal_nb))
+		goto err_nl_notif;
+
 	register_syscore(&hfi_pm);
 
 	/* ITD: detect number of IPC classes */
@@ -747,10 +718,7 @@ void __init intel_hfi_init(void)
 		pr_info("Intel Thread Director detected\n");
 	}
 
-	if (thermal_genl_register_notifier(&hfi_thermal_nb))
-		goto err_nl_notif;
-
-	register_syscore(&hfi_pm);
+	
 
 	return;
 
@@ -765,6 +733,39 @@ err_nomem:
 
 	kfree(hfi_instances);
 	hfi_instances = NULL;
+}
+
+struct hfi_cpu_data {
+	u8	perf_cap;
+	u8	ee_cap;
+
+	u8 ipcc_perf[NR_HFI_ITD_CLASSES];  
+    u8 ipcc_ee[NR_HFI_ITD_CLASSES];  
+
+} __packed;
+
+void intel_hfi_update_ipcc(struct task_struct *curr) {
+    u64 msr;
+    
+    /* lê o MSR que o ITD atualiza com a classe da thread atual */
+    rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
+    
+    curr->ipcc_prev = msr & ITD_CLASS_MASK;
+    
+
+    curr->ipcc = curr->ipcc_prev;
+}
+
+int intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
+{
+	struct hfi_cpu_info *info = &per_cpu(hfi_cpu_info, cpu);
+	struct hfi_cpu_data *caps;
+
+	if (!info->hfi_instance || !info->hfi_instance->data)
+		return 0;
+
+	caps = info->hfi_instance->data + info->index * hfi_features.cpu_stride;
+	return caps->ipcc_perf[ipcc];
 }
 
 
