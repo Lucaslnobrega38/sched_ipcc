@@ -93,57 +93,6 @@ struct hfi_cpu_data {
 
 } __packed;
 
-#ifdef CONFIG_IPC_CLASSES
-
-bool arch_has_ipc_classes(void)
-{
-    return cpu_feature_enabled(X86_FEATURE_ITD);
-}
-EXPORT_SYMBOL_GPL(arch_has_ipc_classes);
-
-void arch_update_ipcc(struct task_struct *p)
-{
-    u64 msr;
-
-    if (!cpu_feature_enabled(X86_FEATURE_ITD))
-        return;
-
-    rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
-
-    /* bit 63 = valid — E-cores do Alder Lake retornam inválido */
-    if (!(msr & BIT_ULL(63)))
-        return;
-
-    p->ipcc = msr & 0x3;  /* bits 1:0 = classe ITD */
-}
-EXPORT_SYMBOL_GPL(arch_update_ipcc);
-
-int arch_get_ipcc_score(unsigned short ipcc, int cpu)
-{
-    struct hfi_cpu_data *data;
-    int score;
-
-    if (!cpu_feature_enabled(X86_FEATURE_ITD))
-        return 0;
-
-    rcu_read_lock();
-    data = per_cpu_ptr(hfi_instance.hfi_cpu_data, cpu);
-    /* usa o score de performance para essa classe */
-    score = data->perf_cap;  /* fallback: score geral do CPU */
-    rcu_read_unlock();
-
-    return score;
-}
-EXPORT_SYMBOL_GPL(arch_get_ipcc_score);
-
-#else  /* !CONFIG_IPC_CLASSES */
-
-bool arch_has_ipc_classes(void) { return false; }
-void arch_update_ipcc(struct task_struct *p) {}
-int arch_get_ipcc_score(unsigned short ipcc, int cpu) { return 0; }
-
-#endif /* CONFIG_IPC_CLASSES */
-
 
 /**
  * struct hfi_hdr - Header of the HFI table
@@ -822,3 +771,41 @@ int intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
 }
 
 
+#ifdef CONFIG_IPC_CLASSES
+
+bool arch_has_ipcc_classes(void)
+{
+	return cpu_feature_enabled(X86_FEATURE_ITD);
+}
+
+void arch_update_ipcc(struct task_struct *p)
+{
+	u64 msr;
+
+	if (!cpu_feature_enabled(X86_FEATURE_ITD))
+		return;
+
+	rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
+
+	if (!(msr & BIT_ULL(63)))
+		return;
+
+	p->ipcc = msr & 0x3;
+}
+
+int arch_get_ipcc_score(unsigned short ipcc, int cpu)
+{
+	struct hfi_cpu_info *info = &per_cpu(hfi_cpu_info, cpu);
+	struct hfi_cpu_data *caps;
+
+	if (!cpu_feature_enabled(X86_FEATURE_ITD))
+		return 0;
+
+	if (!info->hfi_instance || !info->hfi_instance->data)
+		return 0;
+
+	caps = info->hfi_instance->data + info->index * hfi_features.cpu_stride;
+	return caps->perf_cap;
+}
+
+#endif /* CONFIG_IPC_CLASSES */

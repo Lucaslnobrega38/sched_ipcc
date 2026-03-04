@@ -24,6 +24,13 @@ void intel_hfi_offline(unsigned int cpu);
 void intel_hfi_process_event(__u64 pkg_therm_status_msr_val);
 void intel_hfi_update_ipcc(struct task_struct *curr);
 int  intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu);
+
+    #ifdef CONFIG_IPC_CLASSES
+    bool arch_has_ipcc_classes(void);
+    void arch_update_ipcc(struct task_struct *p);
+    int  arch_get_ipcc_score(unsigned short ipcc, int cpu);
+    #endif
+
 #else
 static inline void intel_hfi_init(void) { }
 static inline void intel_hfi_online(unsigned int cpu) { }
