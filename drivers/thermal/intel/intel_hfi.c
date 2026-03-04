@@ -84,6 +84,67 @@ union cpuid6_edx {
  * unitless.
  */
 
+struct hfi_cpu_data {
+	u8	perf_cap;
+	u8	ee_cap;
+
+	u8 ipcc_perf[NR_HFI_ITD_CLASSES];  
+    u8 ipcc_ee[NR_HFI_ITD_CLASSES];  
+
+} __packed;
+
+#ifdef CONFIG_IPC_CLASSES
+
+bool arch_has_ipc_classes(void)
+{
+    return cpu_feature_enabled(X86_FEATURE_ITD);
+}
+EXPORT_SYMBOL_GPL(arch_has_ipc_classes);
+
+void arch_update_ipcc(struct task_struct *p)
+{
+    u64 msr;
+
+    if (!cpu_feature_enabled(X86_FEATURE_ITD))
+        return;
+
+    rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
+
+    /* bit 63 = valid — E-cores do Alder Lake retornam inválido */
+    if (!(msr & BIT_ULL(63)))
+        return;
+
+    p->ipcc = msr & 0x3;  /* bits 1:0 = classe ITD */
+}
+EXPORT_SYMBOL_GPL(arch_update_ipcc);
+
+int arch_get_ipcc_score(unsigned short ipcc, int cpu)
+{
+    struct hfi_cpu_data *data;
+    int score;
+
+    if (!cpu_feature_enabled(X86_FEATURE_ITD))
+        return 0;
+
+    rcu_read_lock();
+    data = per_cpu_ptr(hfi_instance.hfi_cpu_data, cpu);
+    /* usa o score de performance para essa classe */
+    score = data->perf_cap;  /* fallback: score geral do CPU */
+    rcu_read_unlock();
+
+    return score;
+}
+EXPORT_SYMBOL_GPL(arch_get_ipcc_score);
+
+#else  /* !CONFIG_IPC_CLASSES */
+
+bool arch_has_ipc_classes(void) { return false; }
+void arch_update_ipcc(struct task_struct *p) {}
+int arch_get_ipcc_score(unsigned short ipcc, int cpu) { return 0; }
+
+#endif /* CONFIG_IPC_CLASSES */
+
+
 /**
  * struct hfi_hdr - Header of the HFI table
  * @perf_updated:	Hardware updated performance capabilities
@@ -735,14 +796,6 @@ err_nomem:
 	hfi_instances = NULL;
 }
 
-struct hfi_cpu_data {
-	u8	perf_cap;
-	u8	ee_cap;
-
-	u8 ipcc_perf[NR_HFI_ITD_CLASSES];  
-    u8 ipcc_ee[NR_HFI_ITD_CLASSES];  
-
-} __packed;
 
 void intel_hfi_update_ipcc(struct task_struct *curr) {
     u64 msr;

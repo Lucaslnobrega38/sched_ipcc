@@ -821,11 +821,11 @@ void arch_update_ipcc(struct task_struct *p);
 
 int arch_get_ipcc_score(unsigned short ipcc, int cpu);
 
-bool arch_has_ipc_classes(void);
+bool arch_has_ipcc_classes(void);
 
 #ifdef CONFIG_IPC_CLASSES
 static inline bool sched_ipcc_enabled(void) {
-    return arch_has_ipc_classes();  
+    return arch_has_ipcc_classes();  
 }
 #else
 static inline bool sched_ipcc_enabled(void) {
