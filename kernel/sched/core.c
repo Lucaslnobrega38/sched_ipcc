@@ -4391,7 +4391,8 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
 {
 #ifdef CONFIG_IPC_CLASSES
 	p->ipcc = 0;
-	p->ipcc_prev = 0;
+	p->ipcc_candidate = 0;
+	p->ipcc_count = 0;
 #endif 
 
 	p->on_rq			= 0;
@@ -5560,12 +5561,12 @@ void sched_tick(bool user_tick)
 
 	sched_clock_tick();
 
+	
 	if (sched_ipcc_enabled() && user_tick)
-	{
 		arch_update_ipcc(rq->curr);
-	}
 
 	rq_lock(rq, &rf);
+	
 	donor = rq->donor;
 
 	psi_account_irqtime(rq, donor, NULL);

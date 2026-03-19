@@ -51,6 +51,7 @@
 /* Hardware Feedback Interface MSR configuration bits */
 #define HW_FEEDBACK_PTR_VALID_BIT		BIT(0)
 #define HW_FEEDBACK_CONFIG_HFI_ENABLE_BIT	BIT(0)
+#define HW_FEEDBACK_CONFIG_ITD_ENABLE_BIT    BIT(1) 
 
 /* CPUID detection and enumeration definitions for HFI */
 
@@ -87,10 +88,6 @@ union cpuid6_edx {
 struct hfi_cpu_data {
 	u8	perf_cap;
 	u8	ee_cap;
-
-	u8 ipcc_perf[NR_HFI_ITD_CLASSES];  
-    u8 ipcc_ee[NR_HFI_ITD_CLASSES];  
-
 } __packed;
 
 
@@ -175,6 +172,24 @@ static struct workqueue_struct *hfi_updates_wq;
 #define HFI_UPDATE_DELAY_MS		100
 #define HFI_THERMNL_CAPS_PER_EVENT	64
 
+/*
+ * ITMT activation via HFI perf_cap.  intel_pstate may fail to activate ITMT
+ * when CPPC highest_perf is the same for all cores.  HFI perf_cap reliably
+ * differs between P-cores and E-cores, so we use it as a fallback.
+ */
+static void hfi_itmt_work_fn(struct work_struct *work)
+{
+	int ret = sched_set_itmt_support();
+
+	if (ret)
+		pr_err("sched_set_itmt_support() failed: %d\n", ret);
+	else
+		pr_info("ITMT support enabled successfully\n");
+}
+
+static DECLARE_WORK(hfi_itmt_work, hfi_itmt_work_fn);
+static bool hfi_itmt_done;
+
 static void get_hfi_caps(struct hfi_instance *hfi_instance,
 			 struct thermal_genl_cpu_caps *cpu_caps)
 {
@@ -217,6 +232,34 @@ static void update_capabilities(struct hfi_instance *hfi_instance)
 	/* No CPUs to report in this hfi_instance. */
 	if (!cpu_count)
 		goto out;
+
+	/*
+	 * Set ITMT priorities from HFI perf_cap on first update.
+	 * This runs after intel_pstate has enabled HWP, so the HFI
+	 * table contains valid data.  perf_cap reliably differs
+	 * between P-cores and E-cores on hybrid platforms.
+	 */
+	if (!hfi_itmt_done) {
+		struct hfi_cpu_data *caps;
+		s16 index;
+		int cpu;
+
+		raw_spin_lock_irq(&hfi_instance->table_lock);
+		for_each_cpu(cpu, hfi_instance->cpus) {
+			index = per_cpu(hfi_cpu_info, cpu).index;
+			caps = hfi_instance->data +
+			       index * hfi_features.cpu_stride;
+
+			sched_set_itmt_core_prio(caps->perf_cap, cpu);
+			pr_info("ITMT prio: cpu=%d perf_cap=%u ee_cap=%u\n",
+				cpu, caps->perf_cap, caps->ee_cap);
+		}
+		raw_spin_unlock_irq(&hfi_instance->table_lock);
+
+		schedule_work(&hfi_itmt_work);
+		hfi_itmt_done = true;
+		pr_info("Activating ITMT via HFI perf_cap\n");
+	}
 
 	cpu_caps = kzalloc_objs(*cpu_caps, cpu_count);
 	if (!cpu_caps)
@@ -364,6 +407,8 @@ static void hfi_enable(void)
 
 	rdmsrq(MSR_IA32_HW_FEEDBACK_CONFIG, msr_val);
 	msr_val |= HW_FEEDBACK_CONFIG_HFI_ENABLE_BIT;
+	if (cpu_feature_enabled(X86_FEATURE_ITD))
+		msr_val |= HW_FEEDBACK_CONFIG_ITD_ENABLE_BIT;
 	wrmsrq(MSR_IA32_HW_FEEDBACK_CONFIG, msr_val);
 }
 
@@ -484,11 +529,27 @@ void intel_hfi_online(unsigned int cpu)
 enable:
 	cpumask_set_cpu(cpu, hfi_instance->cpus);
 
+	if (cpu_feature_enabled(X86_FEATURE_ITD))
+		wrmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG,
+			HW_FEEDBACK_THREAD_CONFIG_ENABLE_BIT);
+
+	/*
+	 * Set ITMT priority from HWP highest_perf.  intel_pstate may fail to
+	 * activate ITMT when CPPC returns identical values for all cores.
+	 * MSR_HWP_CAPABILITIES bits 7:0 reliably differ on hybrid platforms.
+	 */
+	/*
+	 * ITMT activation moved to update_capabilities() where the HFI
+	 * table has valid perf_cap data (after HWP is enabled).
+	 */
+
 	/*
 	 * Enable this HFI instance if this is its first online CPU and
-	 * there are user-space clients of thermal events.
+	 * there are user-space clients of thermal events, or if IPC classes
+	 * are enabled (scheduler needs HFI data regardless of thermald).
 	 */
-	if (cpumask_weight(hfi_instance->cpus) == 1 && hfi_clients_nr > 0) {
+	if (cpumask_weight(hfi_instance->cpus) == 1 &&
+	    (hfi_clients_nr > 0 || IS_ENABLED(CONFIG_IPC_CLASSES))) {
 		hfi_set_hw_table(hfi_instance);
 		hfi_enable();
 	}
@@ -722,13 +783,10 @@ void __init intel_hfi_init(void)
 
 	register_syscore(&hfi_pm);
 
-	/* ITD: detect number of IPC classes */
-	if (cpu_feature_enabled(X86_FEATURE_ITD)) {
-		/* nr_classes virá do CPUID se você adicionar o campo em hfi_features */
-		pr_info("Intel Thread Director detected\n");
-	}
-
-	
+	pr_info("intel_hfi: initialized (HFI=%d ITD=%d IPC_CLASSES=%d)\n",
+		boot_cpu_has(X86_FEATURE_HFI),
+		boot_cpu_has(X86_FEATURE_ITD),
+		IS_ENABLED(CONFIG_IPC_CLASSES));
 
 	return;
 
@@ -745,32 +803,6 @@ err_nomem:
 	hfi_instances = NULL;
 }
 
-
-void intel_hfi_update_ipcc(struct task_struct *curr) {
-    u64 msr;
-    
-    /* lê o MSR que o ITD atualiza com a classe da thread atual */
-    rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
-    
-    curr->ipcc_prev = msr & ITD_CLASS_MASK;
-    
-
-    curr->ipcc = curr->ipcc_prev;
-}
-
-int intel_hfi_get_ipcc_score(unsigned short ipcc, int cpu)
-{
-	struct hfi_cpu_info *info = &per_cpu(hfi_cpu_info, cpu);
-	struct hfi_cpu_data *caps;
-
-	if (!info->hfi_instance || !info->hfi_instance->data)
-		return 0;
-
-	caps = info->hfi_instance->data + info->index * hfi_features.cpu_stride;
-	return caps->ipcc_perf[ipcc];
-}
-
-
 #ifdef CONFIG_IPC_CLASSES
 
 bool arch_has_ipcc_classes(void)
@@ -780,23 +812,59 @@ bool arch_has_ipcc_classes(void)
 
 void arch_update_ipcc(struct task_struct *p)
 {
-	u64 msr;
+	union hfi_thread_feedback_char_msr msr;
+	u8 new_ipcc;
 
 	if (!cpu_feature_enabled(X86_FEATURE_ITD))
 		return;
 
-	rdmsrl(MSR_IA32_HW_FEEDBACK_THREAD_CONFIG, msr);
+	rdmsrl(MSR_IA32_HW_FEEDBACK_CHAR, msr.full);
 
-	if (!(msr & BIT_ULL(63)))
+	if (!msr.split.valid)
 		return;
 
-	p->ipcc = msr & 0x3;
+	/*
+	 * ipcc=0 is the "unclassified" sentinel in the scheduler.  Hardware
+	 * classids start at 0, so add +1 so that classid 0 → ipcc 1, etc.
+	 */
+	new_ipcc = min_t(u8, msr.split.classid + 1, NR_HFI_ITD_CLASSES);
+
+	/*
+	 * On Alder Lake and Raptor Lake, classification of class 0 and 1
+	 * is only reliable when a single SMT sibling is busy.  Classes 2
+	 * and 3 are always reliable.  Skip unreliable readings.
+	 */
+	if (new_ipcc <= 2) {
+		int cpu = smp_processor_id();
+		const struct cpumask *smt = topology_sibling_cpumask(cpu);
+		int sibling;
+
+		for_each_cpu(sibling, smt) {
+			if (sibling != cpu && !idle_cpu(sibling))
+				return; /* SMT sibling busy → unreliable */
+		}
+	}
+
+	/*
+	 * Require ITD_CLASS_STABILITY_TICKS consecutive identical readings
+	 * before committing to a new class.  This avoids unnecessary
+	 * migrations from transient classification changes.
+	 */
+	if (new_ipcc == p->ipcc_candidate) {
+		if (++p->ipcc_count >= ITD_CLASS_STABILITY_TICKS &&
+		    new_ipcc != p->ipcc)
+			p->ipcc = new_ipcc;
+	} else {
+		p->ipcc_candidate = new_ipcc;
+		p->ipcc_count = 1;
+	}
 }
 
 int arch_get_ipcc_score(unsigned short ipcc, int cpu)
 {
 	struct hfi_cpu_info *info = &per_cpu(hfi_cpu_info, cpu);
 	struct hfi_cpu_data *caps;
+	int score;
 
 	if (!cpu_feature_enabled(X86_FEATURE_ITD))
 		return 0;
@@ -805,7 +873,23 @@ int arch_get_ipcc_score(unsigned short ipcc, int cpu)
 		return 0;
 
 	caps = info->hfi_instance->data + info->index * hfi_features.cpu_stride;
-	return caps->perf_cap;
+
+	score = caps->perf_cap;
+
+	switch (ipcc) 
+	{
+	case 2: /* Vector: prefer P-core (1.5x perf_cap) */
+		score += score >> 1;
+		break;
+	case 3: /* VNNI/DL Boost: strongly prefer P-core (2x perf_cap) */
+		score += score;
+		break;
+	case 4:
+		score = caps->ee_cap;
+		break;
+	}
+
+	return score;
 }
 
 #endif /* CONFIG_IPC_CLASSES */

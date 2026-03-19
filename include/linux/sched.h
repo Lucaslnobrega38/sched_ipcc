@@ -816,32 +816,23 @@ struct kmap_ctrl {
 #endif
 };
 
-// lê o ITD 
+#ifdef CONFIG_IPC_CLASSES
 void arch_update_ipcc(struct task_struct *p);
-
 int arch_get_ipcc_score(unsigned short ipcc, int cpu);
-
 bool arch_has_ipcc_classes(void);
 
-#ifdef CONFIG_IPC_CLASSES
 static inline bool sched_ipcc_enabled(void) {
-    return arch_has_ipcc_classes();  
+    return arch_has_ipcc_classes();
 }
 #else
-static inline bool sched_ipcc_enabled(void) {
-    return false;  
-}
+static inline void arch_update_ipcc(struct task_struct *p) { }
+static inline int arch_get_ipcc_score(unsigned short ipcc, int cpu) { return 0; }
+static inline bool arch_has_ipcc_classes(void) { return false; }
+static inline bool sched_ipcc_enabled(void) { return false; }
 #endif
 
 struct task_struct {
 
-#ifdef CONFIG_IPC_CLASSES
-
-	unsigned short ipcc;      // classe atual
-    unsigned short ipcc_prev;   // classe candidata
-
-
-#endif
 
 
 #ifdef CONFIG_THREAD_INFO_IN_TASK
@@ -861,6 +852,14 @@ struct task_struct {
 	 * scheduling-critical items should be added above here.
 	 */
 	randomized_struct_fields_start
+
+#ifdef CONFIG_IPC_CLASSES
+	unsigned short		ipcc;		/* current confirmed class (0 = unclassified) */
+	unsigned short		ipcc_candidate;	/* last classid seen from ITD */
+	unsigned short		ipcc_count;	/* consecutive ticks with same candidate */
+#endif
+
+
 
 	void				*stack;
 	refcount_t			usage;

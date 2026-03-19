@@ -58,9 +58,7 @@
 #include "stats.h"
 #include "autogroup.h"
 
-#ifdef CONFIG_IPC_CLASSES
-#define NR_IPC_CLASSES  4  /* classes 0-3 do Intel Thread Director */
-#endif
+/* NR_IPC_CLASSES defined in sched.h */
 
 /*
  * The initial- and re-scaling of tunables is configurable
@@ -6885,6 +6883,11 @@ enqueue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 	if (task_is_throttled(p) && enqueue_throttled_task(p))
 		return;
 
+#ifdef CONFIG_IPC_CLASSES
+	if (p->ipcc < NR_IPC_CLASSES)
+		rq->nr_ipcc[p->ipcc]++;
+#endif
+
 	/*
 	 * The code below (indirectly) updates schedutil which looks at
 	 * the cfs_rq utilization to select a frequency.
@@ -7115,6 +7118,11 @@ static bool dequeue_task_fair(struct rq *rq, struct task_struct *p, int flags)
 		dequeue_throttled_task(p, flags);
 		return true;
 	}
+
+#ifdef CONFIG_IPC_CLASSES
+	if (p->ipcc < NR_IPC_CLASSES && rq->nr_ipcc[p->ipcc] > 0)
+		rq->nr_ipcc[p->ipcc]--;
+#endif
 
 	if (!p->se.sched_delayed)
 		util_est_dequeue(&rq->cfs, p);
@@ -7748,17 +7756,6 @@ select_idle_capacity(struct task_struct *p, struct sched_domain *sd, int target)
 
 	return best_cpu;
 }
-/*
-static int compute_ipcc_score(struct sched_group *sg) 
-{
-    int score = 0;
-    for_each_cpu(cpu, sg->cpumask) {
-        struct task_struct *p = cpu_rq(cpu)->curr;
-        score += arch_get_ipcc_score(p->ipcc, cpu);
-    }
-    return score;
-}
-*/
 
 static inline bool asym_fits_cpu(unsigned long util,
 				 unsigned long util_min,
@@ -8533,230 +8530,6 @@ unlock:
 	return target;
 }
 
-static unsigned long apply_ipcc_weight(unsigned short ipcc, unsigned long spare_cap,int cpu)
-{
-    bool is_pcore = (arch_scale_cpu_capacity(cpu) == 1024);
-
-    switch (ipcc) {
-
-    case 0:
-        /* preferência fraca por P-core, pois pode ser que essa task esteja no E core e o ipcc seja impreciso (raptor lake)
-           P-core: leve boost
-           E-core: leve penalidade */
-        return is_pcore ? spare_cap + (spare_cap >> 3)   /* +12.5% */
-                        : spare_cap - (spare_cap >> 3);  /* -12.5% */
-
-    case 1:
-    case 2:
-        /* preferência forte por P-core
-           P-core: boost significativo
-           E-core: penalidade significativa
-           mas E-core ainda vence se tiver muito mais spare cap */
-        return is_pcore ? spare_cap + (spare_cap >> 2)   /* +25% */
-                        : spare_cap >> 2;                /* -25% */
-
-    case 3:
-        /* preferência fortíssima por E-core
-           inverso do caso 1/2 */
-        return is_pcore ? spare_cap >> 1                 /* -50% */
-                        : spare_cap + (spare_cap >> 1);  /* +50% */
-
-    default:
-        return spare_cap;
-    }
-}
-
-static int find_ipcc_appropriate_cpu(struct task_struct *p, int prev_cpu)
-{
-	struct cpumask *cpus = this_cpu_cpumask_var_ptr(select_rq_mask);
-	unsigned long prev_delta = ULONG_MAX, best_delta = ULONG_MAX;
-	unsigned long p_util_min = uclamp_is_used() ? uclamp_eff_value(p, UCLAMP_MIN) : 0;
-	unsigned long p_util_max = uclamp_is_used() ? uclamp_eff_value(p, UCLAMP_MAX) : 1024;
-	struct root_domain *rd = this_rq()->rd;
-	int cpu, best_ipcc_cpu, target = -1;
-	int prev_fits = -1, best_fits = -1;
-	unsigned long best_actual_cap = 0;
-	bool best_is_pcore = false;
-	unsigned long prev_actual_cap = 0;
-	bool prev_is_pcore = (arch_scale_cpu_capacity(prev_cpu) == 1024);
-	struct sched_domain *sd;
-	struct perf_domain *pd;
-	struct energy_env eenv;
-
-	rcu_read_lock();
-	pd = rcu_dereference_all(rd->pd);
-	if (!pd)
-		goto unlock;
-
-	// o loop não é necessário em sistemas não numa
-	sd = rcu_dereference_all(*this_cpu_ptr(&sd_asym_cpucapacity));
-    if (!sd)
-        goto unlock;
-
-	target = prev_cpu;
-
-	sync_entity_load_avg(&p->se);
-	if (!task_util_est(p) && p_util_min == 0)
-		goto unlock;
-
-	eenv_task_busy_time(&eenv, p, prev_cpu);
-
-	for (; pd; pd = pd->next) {
-		unsigned long util_min = p_util_min, util_max = p_util_max;
-		unsigned long cpu_cap, cpu_actual_cap, util;
-		long prev_spare_cap = -1, max_spare_cap = -1;
-		unsigned long rq_util_min, rq_util_max;
-		unsigned long cur_delta, base_energy;
-		int max_spare_cap_cpu = -1;
-		int fits, max_fits = -1;
-		
-
-		if (!cpumask_and(cpus, perf_domain_span(pd), cpu_online_mask))
-			continue;
-
-		/* Account external pressure for the energy estimation */
-		cpu = cpumask_first(cpus);
-		cpu_actual_cap = get_actual_cpu_capacity(cpu);
-		eenv.cpu_cap = cpu_actual_cap;
-		eenv.pd_cap = 0;
-
-		bool max_is_pcore = (arch_scale_cpu_capacity(cpu) == 1024);
-
-		for_each_cpu(cpu, cpus) {
-			struct rq *rq = cpu_rq(cpu);
-
-			eenv.pd_cap += cpu_actual_cap;
-
-			if (!cpumask_test_cpu(cpu, sched_domain_span(sd)))
-				continue;
-
-			if (!cpumask_test_cpu(cpu, p->cpus_ptr))
-				continue;
-
-			util = cpu_util(cpu, p, cpu, 0);
-			cpu_cap = capacity_of(cpu);
-
-			/*
-			 * Skip CPUs that cannot satisfy the capacity request.
-			 * IOW, placing the task there would make the CPU
-			 * overutilized. Take uclamp into account to see how
-			 * much capacity we can get out of the CPU; this is
-			 * aligned with sched_cpu_util().
-			 */
-			if (uclamp_is_used() && !uclamp_rq_is_idle(rq)) {
-				/*
-				 * Open code uclamp_rq_util_with() except for
-				 * the clamp() part. I.e.: apply max aggregation
-				 * only. util_fits_cpu() logic requires to
-				 * operate on non clamped util but must use the
-				 * max-aggregated uclamp_{min, max}.
-				 */
-				rq_util_min = uclamp_rq_get(rq, UCLAMP_MIN);
-				rq_util_max = uclamp_rq_get(rq, UCLAMP_MAX);
-
-				util_min = max(rq_util_min, p_util_min);
-				util_max = max(rq_util_max, p_util_max);
-			}
-
-			fits = util_fits_cpu(util, util_min, util_max, cpu);
-			if (!fits)
-				continue;
-
-			lsub_positive(&cpu_cap, util);
-
-			// !!!!!!!!!!!!!! cpu_cap sobrescrita por peso de ipcc
-			cpu_cap = apply_ipcc_weight(p->ipcc,cpu_cap,cpu);
-
-			if (cpu == prev_cpu) 
-			{
-				/* Always use prev_cpu as a candidate. */
-				prev_spare_cap = cpu_cap;
-				prev_fits = fits;
-			} else if ((fits > max_fits) ||
-				   ((fits == max_fits) && ((long)cpu_cap > max_spare_cap))) {
-				/*
-				 * Find the CPU with the maximum spare capacity
-				 * among the remaining CPUs in the performance
-				 * domain.
-				 */
-				max_spare_cap = cpu_cap;
-				max_spare_cap_cpu = cpu;
-				max_fits = fits;
-			}
-		}
-
-		if (max_spare_cap_cpu < 0 && prev_spare_cap < 0)
-			continue;
-
-		eenv_pd_busy_time(&eenv, cpus, p);
-		/* Compute the 'base' energy of the pd, without @p */
-		base_energy = compute_energy(&eenv, pd, cpus, p, -1);
-
-		/* Evaluate the energy impact of using prev_cpu. */
-		if (prev_spare_cap > -1) {
-			prev_delta = compute_energy(&eenv, pd, cpus, p,
-						    prev_cpu);
-			/* CPU utilization has changed */
-			if (prev_delta < base_energy)
-				goto unlock;
-			prev_delta -= base_energy;
-			prev_actual_cap = cpu_actual_cap;
-			best_delta = min(best_delta, prev_delta);
-		}
-
-		/* Evaluate the energy impact of using max_spare_cap_cpu. */
-		if (max_spare_cap_cpu >= 0 && max_spare_cap > prev_spare_cap) {
-			/* Current best energy cpu fits better */
-			if (max_fits < best_fits)
-				continue;
-
-			/*
-			 * Both don't fit performance hint (i.e. uclamp_min)
-			 * but best energy cpu has better capacity.
-			 */
-			if ((max_fits < 0) &&
-			    (cpu_actual_cap <= best_actual_cap))
-				continue;
-
-			cur_delta = compute_energy(&eenv, pd, cpus, p,
-						   max_spare_cap_cpu);
-			/* CPU utilization has changed */
-			if (cur_delta < base_energy)
-				goto unlock;
-			cur_delta -= base_energy;
-
-			/*
-			 * Both fit for the task but best energy cpu has lower
-			 * energy impact.
-			 */
-			if ((max_fits > 0) && (best_fits > 0) &&
-				(cur_delta >= best_delta) &&
-				!(max_is_pcore && !best_is_pcore))  /* não rejeita: P substituindo E */
-			continue;
-
-			best_delta = cur_delta;
-			best_ipcc_cpu = max_spare_cap_cpu;
-			best_fits = max_fits;
-			best_actual_cap = cpu_actual_cap;
-			best_is_pcore = max_is_pcore;
-		}
-	}
-	rcu_read_unlock();
-
-	if ((best_fits > prev_fits) ||
-		(best_fits == prev_fits && best_fits > 0 &&
-		((best_is_pcore && !prev_is_pcore) || best_delta < prev_delta)) ||
-		(best_fits < 0 && best_actual_cap > prev_actual_cap))
-		target = best_ipcc_cpu;
-
-	return target;
-
-unlock:
-	rcu_read_unlock();
-
-	return target;
-}
-
 /*
  * select_task_rq_fair: Select target runqueue for the waking task in domains
  * that have the relevant SD flag set. In practice, this is SD_BALANCE_WAKE,
@@ -8798,7 +8571,7 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)// mudar
 
 		if (!is_rd_overutilized(this_rq()->rd)) { // aqui dá pra fazer distinção entre o caminho de p tasks e e tasks com confiança, já que o sistema ta de boa
 		
-			new_cpu = find_ipcc_appropriate_cpu(p,prev_cpu);
+			new_cpu = find_energy_efficient_cpu(p,prev_cpu);
 
 			if (new_cpu >= 0)
 				return new_cpu; 
@@ -10253,7 +10026,7 @@ struct sg_lb_stats {
 #endif
 
 #ifdef CONFIG_IPC_CLASSES
-    unsigned int  nr_ipcc_tasks[NR_IPC_CLASSES]; // tasks por classe
+	unsigned int ipcc_class_mask;  /* bitmask: bit N set = group has ipcc=N tasks */
 #endif
 };
 
@@ -10661,6 +10434,50 @@ sched_reduced_capacity(struct rq *rq, struct sched_domain *sd)
 	return check_cpu_capacity(rq, sd);
 }
 
+#ifdef CONFIG_IPC_CLASSES
+/*
+ * ipcc_mask_pcore_prio - highest P-core migration priority from a class mask.
+ *
+ * P-core preference order: ipcc 3 > 2 > 1 > 0.
+ * ipcc=4 (background) gets lowest priority — should stay on E-core.
+ * Returns 0 if mask is empty or only has background tasks.
+ */
+static int ipcc_mask_pcore_prio(unsigned int mask)
+{
+	if (mask & (1u << 3))
+		return 4;
+	if (mask & (1u << 2))
+		return 3;
+	if (mask & (1u << 1))
+		return 2;
+	if (mask & (1u << 0))
+		return 1;
+	return 0;
+}
+
+/*
+ * update_sg_lb_ipcc_stats - IPCC score stats for a sched_group.
+ * Used as tiebreaker when two asym_packing groups have equal priority.
+ */
+static void update_sg_lb_ipcc_stats(struct sg_lb_stats *sgs,
+				    struct sched_group *group)
+{
+	int cpu, i;
+
+	sgs->ipcc_class_mask = 0;
+
+	for_each_cpu(cpu, sched_group_span(group)) {
+		struct rq *rq = cpu_rq(cpu);
+
+		for (i = 0; i < NR_IPC_CLASSES; i++) {
+			if (rq->nr_ipcc[i])
+				sgs->ipcc_class_mask |= (1u << i);
+		}
+	}
+}
+
+#endif /* CONFIG_IPC_CLASSES */
+
 /**
  * update_sg_lb_stats - Update sched_group's statistics for load balancing.
  * @env: The load balancing environment.
@@ -10754,6 +10571,17 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 	if (sgs->group_type == group_overloaded)
 		sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE) /
 				sgs->group_capacity;
+
+#ifdef CONFIG_IPC_CLASSES
+	/* Collect IPCC stats for asym_packing tiebreaking */
+	if (!local_group && (env->sd->flags & SD_ASYM_PACKING) &&
+	    sgs->sum_h_nr_running) {
+		update_sg_lb_ipcc_stats(sgs, group);
+		// trace_printk("ipcc_lb_stats: group_type=%u nr_running=%u class_mask=0x%x\n",
+			    //  sgs->group_type, sgs->sum_h_nr_running,
+			    //  sgs->ipcc_class_mask);
+	}
+#endif
 }
 
 /**
@@ -10817,8 +10645,31 @@ static bool update_sd_pick_busiest(struct lb_env *env,
 
 	case group_asym_packing:
 		/* Prefer to move from lowest priority CPU's work */
-		return sched_asym_prefer(READ_ONCE(sds->busiest->asym_prefer_cpu),
-					 READ_ONCE(sg->asym_prefer_cpu));
+		if (sched_asym_prefer(READ_ONCE(sg->asym_prefer_cpu),
+				      READ_ONCE(sds->busiest->asym_prefer_cpu)))
+			return false;
+		if (sched_asym_prefer(READ_ONCE(sds->busiest->asym_prefer_cpu),
+				      READ_ONCE(sg->asym_prefer_cpu)))
+			return true;
+		/*
+		 * Same priority: use IPCC class mask as tiebreaker.
+		 * Prefer to pull from the group with higher-class tasks
+		 * (higher mask = has tasks that benefit more from P-core).
+		 */
+#ifdef CONFIG_IPC_CLASSES
+		{
+			int sg_prio = ipcc_mask_pcore_prio(sgs->ipcc_class_mask);
+			int bu_prio = ipcc_mask_pcore_prio(busiest->ipcc_class_mask);
+
+			// trace_printk("ipcc_pick_busiest: sg_mask=0x%x(%d) busiest_mask=0x%x(%d) pick=%d\n",
+				    //  sgs->ipcc_class_mask, sg_prio,
+				    //  busiest->ipcc_class_mask, bu_prio,
+				    //  sg_prio > bu_prio);
+			return sg_prio > bu_prio;
+		}
+#else
+		return false;
+#endif
 
 	case group_misfit_task:
 		/*

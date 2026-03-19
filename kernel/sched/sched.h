@@ -1170,6 +1170,11 @@ struct rq {
 #define UCLAMP_FLAG_IDLE 0x01
 #endif
 
+#ifdef CONFIG_IPC_CLASSES
+#define NR_IPC_CLASSES	5  /* ipcc 0 (unclassified) + classids 0-3 → ipcc 1-4 */
+	unsigned char		nr_ipcc[NR_IPC_CLASSES];
+#endif
+
 	struct cfs_rq		cfs;
 	struct rt_rq		rt;
 	struct dl_rq		dl;

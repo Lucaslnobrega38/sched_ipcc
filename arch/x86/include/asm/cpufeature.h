@@ -140,9 +140,6 @@ t_no:
 #define CPU_FEATURE_TYPEVAL		boot_cpu_data.x86_vendor, boot_cpu_data.x86, \
 					boot_cpu_data.x86_model
 
-					
-#define X86_FEATURE_ITD  (14*32+23)
-
-
+	
 #endif /* defined(__KERNEL__) && !defined(__ASSEMBLER__) */
 #endif /* _ASM_X86_CPUFEATURE_H */
