@@ -548,8 +548,7 @@ enable:
 	 * there are user-space clients of thermal events, or if IPC classes
 	 * are enabled (scheduler needs HFI data regardless of thermald).
 	 */
-	if (cpumask_weight(hfi_instance->cpus) == 1 &&
-	    (hfi_clients_nr > 0 || IS_ENABLED(CONFIG_IPC_CLASSES))) {
+	if (cpumask_weight(hfi_instance->cpus) == 1) {
 		hfi_set_hw_table(hfi_instance);
 		hfi_enable();
 	}
@@ -818,6 +817,15 @@ void arch_update_ipcc(struct task_struct *p)
 	if (!cpu_feature_enabled(X86_FEATURE_ITD))
 		return;
 
+	/*
+	 * Adaptive cooldown: skip MSR reads using exponential backoff.
+	 * Unclassified tasks (ipcc=0) always read immediately.
+	 */
+	if (p->ipcc != 0 && p->ipcc_cooldown > 0) {
+		p->ipcc_cooldown--;
+		return;
+	}
+
 	rdmsrl(MSR_IA32_HW_FEEDBACK_CHAR, msr.full);
 
 	if (!msr.split.valid)
@@ -829,31 +837,40 @@ void arch_update_ipcc(struct task_struct *p)
 	 */
 	new_ipcc = min_t(u8, msr.split.classid + 1, NR_HFI_ITD_CLASSES);
 
-	/*
-	 * On Alder Lake and Raptor Lake, classification of class 0 and 1
-	 * is only reliable when a single SMT sibling is busy.  Classes 2
-	 * and 3 are always reliable.  Skip unreliable readings.
-	 */
-	if (new_ipcc <= 2) {
-		int cpu = smp_processor_id();
-		const struct cpumask *smt = topology_sibling_cpumask(cpu);
-		int sibling;
-
-		for_each_cpu(sibling, smt) {
-			if (sibling != cpu && !idle_cpu(sibling))
-				return; /* SMT sibling busy → unreliable */
+	if (p->ipcc != 0) {
+		/*
+		 * Already classified: single-read recheck after cooldown.
+		 * ipcc_count stores the current backoff interval (repurposed
+		 * after classification — no longer needed for stability).
+		 */
+		if (new_ipcc == p->ipcc) {
+			/* Same class confirmed: exponential backoff */
+			p->ipcc_count = min_t(unsigned short,
+					      p->ipcc_count << 1,
+					      ITD_COOLDOWN_MAX);
+			p->ipcc_cooldown = p->ipcc_count;
+		} else {
+			/*
+			 * Phase change detected: drop classification and
+			 * re-enter stability filter from scratch.
+			 */
+			p->ipcc = 0;
+			p->ipcc_candidate = new_ipcc;
+			p->ipcc_count = 1;
 		}
+		return;
 	}
 
 	/*
-	 * Require ITD_CLASS_STABILITY_TICKS consecutive identical readings
-	 * before committing to a new class.  This avoids unnecessary
-	 * migrations from transient classification changes.
+	 * Unclassified (ipcc == 0): require ITD_CLASS_STABILITY_TICKS
+	 * consecutive identical readings before committing to a class.
 	 */
 	if (new_ipcc == p->ipcc_candidate) {
-		if (++p->ipcc_count >= ITD_CLASS_STABILITY_TICKS &&
-		    new_ipcc != p->ipcc)
+		if (++p->ipcc_count >= ITD_CLASS_STABILITY_TICKS) {
 			p->ipcc = new_ipcc;
+			p->ipcc_count = ITD_COOLDOWN_MIN;
+			p->ipcc_cooldown = ITD_COOLDOWN_MIN;
+		}
 	} else {
 		p->ipcc_candidate = new_ipcc;
 		p->ipcc_count = 1;

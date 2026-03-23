@@ -1354,6 +1354,12 @@ void proc_sched_show_task(struct task_struct *p, struct pid_namespace *ns,
 #ifdef CONFIG_SCHED_CLASS_EXT
 	__PS("ext.enabled", task_on_scx(p));
 #endif
+#ifdef CONFIG_IPC_CLASSES
+	__PS("ipcc", p->ipcc);
+	__PS("ipcc_candidate", p->ipcc_candidate);
+	__PS("ipcc_count", p->ipcc_count);
+	__PS("ipcc_cooldown", p->ipcc_cooldown);
+#endif
 #undef PN_SCHEDSTAT
 #undef P_SCHEDSTAT
 

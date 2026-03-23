@@ -14,6 +14,10 @@
 /* Stability: require 4 consecutive identical ticks before updating ipcc */
 #define ITD_CLASS_STABILITY_TICKS  4
 
+/* Adaptive cooldown: exponential backoff after classification stabilizes */
+#define ITD_COOLDOWN_MIN	4	/* ticks to skip after first classification */
+#define ITD_COOLDOWN_MAX	128	/* upper bound (~128ms at 1kHz tick) */
+
 /* MSRs do ITD Thread Director */
 #define MSR_IA32_HW_FEEDBACK_THREAD_CONFIG  0x17D4
 #define HW_FEEDBACK_THREAD_CONFIG_ENABLE_BIT BIT(0)

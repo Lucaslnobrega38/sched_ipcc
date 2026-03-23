@@ -4393,6 +4393,7 @@ static void __sched_fork(u64 clone_flags, struct task_struct *p)
 	p->ipcc = 0;
 	p->ipcc_candidate = 0;
 	p->ipcc_count = 0;
+	p->ipcc_cooldown = 0;
 #endif 
 
 	p->on_rq			= 0;

@@ -857,6 +857,7 @@ struct task_struct {
 	unsigned short		ipcc;		/* current confirmed class (0 = unclassified) */
 	unsigned short		ipcc_candidate;	/* last classid seen from ITD */
 	unsigned short		ipcc_count;	/* consecutive ticks with same candidate */
+	unsigned short		ipcc_cooldown;	/* ticks to skip before next MSR read */
 #endif
 
 
