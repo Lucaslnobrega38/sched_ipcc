@@ -817,15 +817,6 @@ void arch_update_ipcc(struct task_struct *p)
 	if (!cpu_feature_enabled(X86_FEATURE_ITD))
 		return;
 
-	/*
-	 * Adaptive cooldown: skip MSR reads using exponential backoff.
-	 * Unclassified tasks (ipcc=0) always read immediately.
-	 */
-	if (p->ipcc != 0 && p->ipcc_cooldown > 0) {
-		p->ipcc_cooldown--;
-		return;
-	}
-
 	rdmsrl(MSR_IA32_HW_FEEDBACK_CHAR, msr.full);
 
 	if (!msr.split.valid)
@@ -837,40 +828,29 @@ void arch_update_ipcc(struct task_struct *p)
 	 */
 	new_ipcc = min_t(u8, msr.split.classid + 1, NR_HFI_ITD_CLASSES);
 
-	if (p->ipcc != 0) {
-		/*
-		 * Already classified: single-read recheck after cooldown.
-		 * ipcc_count stores the current backoff interval (repurposed
-		 * after classification — no longer needed for stability).
-		 */
-		if (new_ipcc == p->ipcc) {
-			/* Same class confirmed: exponential backoff */
-			p->ipcc_count = min_t(unsigned short,
-					      p->ipcc_count << 1,
-					      ITD_COOLDOWN_MAX);
-			p->ipcc_cooldown = p->ipcc_count;
-		} else {
-			/*
-			 * Phase change detected: drop classification and
-			 * re-enter stability filter from scratch.
-			 */
-			p->ipcc = 0;
-			p->ipcc_candidate = new_ipcc;
-			p->ipcc_count = 1;
+	/*
+	 * SMT reliability filter: classes 0–1 (scalar/vector) are unreliable
+	 * when an SMT sibling is busy on the same physical core.  Skip the
+	 * reading in that case — the task keeps its previous class.
+	 */
+	if (new_ipcc <= 2) {
+		int cpu = smp_processor_id();
+		const struct cpumask *smt = topology_sibling_cpumask(cpu);
+		int sibling;
+
+		for_each_cpu(sibling, smt) {
+			if (sibling != cpu && !idle_cpu(sibling))
+				return;
 		}
-		return;
 	}
 
 	/*
-	 * Unclassified (ipcc == 0): require ITD_CLASS_STABILITY_TICKS
-	 * consecutive identical readings before committing to a class.
+	 * Require ITD_CLASS_STABILITY_TICKS consecutive identical readings
+	 * before committing to a new class.
 	 */
 	if (new_ipcc == p->ipcc_candidate) {
-		if (++p->ipcc_count >= ITD_CLASS_STABILITY_TICKS) {
+		if (++p->ipcc_count >= ITD_CLASS_STABILITY_TICKS)
 			p->ipcc = new_ipcc;
-			p->ipcc_count = ITD_COOLDOWN_MIN;
-			p->ipcc_cooldown = ITD_COOLDOWN_MIN;
-		}
 	} else {
 		p->ipcc_candidate = new_ipcc;
 		p->ipcc_count = 1;

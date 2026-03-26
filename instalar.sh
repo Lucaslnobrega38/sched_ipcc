@@ -3,12 +3,14 @@ set -e
 
 MACHINE_ID="7c6b088b521f449bbab32c3b40d117eb"
 ESP="/efi/${MACHINE_ID}"
+
+echo "Compilando kernel..."
+make -j$(nproc)
+
 VERSION=$(make -s kernelrelease)
 ENTRY_DIR="${ESP}/${VERSION}"
 CONF="/efi/loader/entries/${MACHINE_ID}-${VERSION}.conf"
-
-echo "Compilando kernel ${VERSION}..."
-make -j$(nproc)
+echo "Versao: ${VERSION}"
 
 echo "Instalando modulos..."
 sudo make modules_install

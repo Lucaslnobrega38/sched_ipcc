@@ -8543,12 +8543,6 @@ unlock:
 static int
 select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)// mudar aqui?
 {
-	/*
-	0 = p ou e (preferência fraca p)
-	1 e 2 = p (preferência forte p)
-	3 = e (preferência forte e)
-
-	*/
 
 	int sync = (wake_flags & WF_SYNC) && !(current->flags & PF_EXITING);
 	struct sched_domain *tmp, *sd = NULL;
