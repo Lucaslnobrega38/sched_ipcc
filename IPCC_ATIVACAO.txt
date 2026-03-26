@@ -1,0 +1,85 @@
+Como ativar IPC Classes (Intel Thread Director) no kernel 7.0.0-rc1
+=====================================================================
+
+Os patches de Ricardo Neri adicionam suporte a IPC Classes (classificação de
+threads por tipo de carga usando o Intel Thread Director - ITD). Esta feature
+NÃO tem entrada no Kconfig — precisa ser ativada manualmente no .config.
+
+
+REQUISITOS DE HARDWARE
+----------------------
+- Processador Intel Alder Lake (12ª gen) ou Raptor Lake (13ª gen) ou mais novo
+- Requer suporte a Intel HFI (Hardware Feedback Interface) no firmware
+
+
+CONFIGS NECESSÁRIAS
+-------------------
+Edite o .config (ou use scripts/config) antes de compilar:
+
+  CONFIG_IPC_CLASSES=y          ← NÃO tem entrada no menuconfig, adicionar manualmente
+  CONFIG_INTEL_HFI_THERMAL=y    ← necessário para leitura dos MSRs ITD
+  CONFIG_X86_INTEL_PSTATE=y     ← necessário para ITMT e governor de frequência
+
+ITMT (Intel Turbo Boost Max 3.0) é ativado automaticamente via bypass no
+intel_hfi.c usando os valores de perf_cap do HFI, mesmo quando o firmware
+não ativa via CPPC (caso comum em laptops).
+
+
+AVISO SOBRE olddefconfig
+------------------------
+CONFIG_IPC_CLASSES não tem entrada no Kconfig, então:
+
+  make olddefconfig   ← remove silenciosamente CONFIG_IPC_CLASSES=y
+
+Sempre verifique depois de rodar olddefconfig:
+
+  grep CONFIG_IPC_CLASSES .config
+
+Se não aparecer, adicione manualmente:
+
+  scripts/config --enable CONFIG_IPC_CLASSES
+
+
+COMO VERIFICAR SE ESTÁ ATIVO APÓS BOOTAR
+-----------------------------------------
+1. Verificar feature ITD no CPU:
+   grep itd /proc/cpuinfo
+
+2. Ver classificação de uma tarefa em tempo real:
+   taskset -c 0 stress-ng --matrix 1 --timeout 30 &
+   PID=$!
+   sleep 5
+   cat /proc/$PID/sched | grep ipcc
+   kill $PID
+
+   Saída esperada (P-core com carga):
+     ipcc           : 1   ← classificado (1=scalar, 2=vector, 3=VNNI, 4=spin-wait)
+     ipcc_candidate : 1
+     ipcc_count     : 4   ← 4 leituras consecutivas iguais (ITD_CLASS_STABILITY_TICKS)
+
+3. E-cores NUNCA classificam — sempre retornam ipcc=0. É limitação de hardware.
+
+4. ITMT (prioridade de CPU para asym_packing):
+   cat /sys/devices/system/cpu/cpu*/cpufreq/scaling_driver   ← deve mostrar intel_pstate
+
+
+MAPEAMENTO DE CLASSES
+---------------------
+  ipcc=0  → unclassified (não classificado ainda, ou E-core)
+  ipcc=1  → scalar (classid 0: uso geral, inteiros)
+  ipcc=2  → vector (classid 1: SIMD/AVX)
+  ipcc=3  → VNNI   (classid 2: inferência de IA, AVX-512 VNNI)
+  ipcc=4  → spin-wait (classid 3: locks, busy-wait)
+
+No Raptor Lake na prática só aparecem ipcc=1 (scalar) e eventualmente ipcc=2.
+
+
+ESTRUTURA DOS PATCHES (arquivos modificados vs mainline)
+---------------------------------------------------------
+  drivers/thermal/intel/intel_hfi.c  ← classificação ITD, bypass ITMT via HFI
+  drivers/thermal/intel/intel_hfi.h  ← defines de classes e MSRs
+  kernel/sched/fair.c                ← tiebreaker IPCC no load balancer
+  kernel/sched/core.c                ← sched_tick chama arch_update_ipcc()
+  kernel/sched/sched.h               ← nr_ipcc[] por runqueue
+  kernel/sched/debug.c               ← exporta ipcc em /proc/<pid>/sched
+  include/linux/sched.h              ← campos ipcc na task_struct
