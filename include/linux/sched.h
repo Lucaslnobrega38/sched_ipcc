@@ -855,9 +855,10 @@ struct task_struct {
 
 #ifdef CONFIG_IPC_CLASSES
 	unsigned short		ipcc;		/* current confirmed class (0 = unclassified) */
-	unsigned short		ipcc_candidate;	/* last classid seen from ITD */
-	unsigned short		ipcc_count;	/* consecutive ticks with same candidate */
-	unsigned short		ipcc_cooldown;	/* ticks to skip before next MSR read */
+
+	unsigned int ipcc_ticks_cls1;
+	unsigned int ipcc_ticks_cls2;
+	unsigned int ipcc_total_ticks;  /* para saber quando decair */
 #endif
 
 

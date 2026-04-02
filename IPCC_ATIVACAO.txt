@@ -68,6 +68,7 @@ MAPEAMENTO DE CLASSES
   ipcc=0  → unclassified (não classificado ainda, ou E-core)
   ipcc=1  → scalar (classid 0: uso geral, inteiros)
   ipcc=2  → vector (classid 1: SIMD/AVX)
+  
   ipcc=3  → VNNI   (classid 2: inferência de IA, AVX-512 VNNI)
   ipcc=4  → spin-wait (classid 3: locks, busy-wait)
 

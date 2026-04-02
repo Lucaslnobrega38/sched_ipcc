@@ -39,6 +39,7 @@
 #include <linux/string.h>
 #include <linux/syscore_ops.h>
 #include <linux/topology.h>
+#include <linux/sched/topology.h>
 #include <linux/workqueue.h>
 
 #include <asm/msr.h>
@@ -817,6 +818,12 @@ void arch_update_ipcc(struct task_struct *p)
 	if (!cpu_feature_enabled(X86_FEATURE_ITD))
 		return;
 
+	/*
+	 * E-cores never return useful ITD classifications.  Skip the
+	 * rdmsrl on low-priority cores (perf_cap <= 34 on Raptor Lake).
+	 */
+	if (arch_asym_cpu_priority(smp_processor_id()) <= 34) {return;}
+
 	rdmsrl(MSR_IA32_HW_FEEDBACK_CHAR, msr.full);
 
 	if (!msr.split.valid)
@@ -827,34 +834,32 @@ void arch_update_ipcc(struct task_struct *p)
 	 * classids start at 0, so add +1 so that classid 0 → ipcc 1, etc.
 	 */
 	new_ipcc = min_t(u8, msr.split.classid + 1, NR_HFI_ITD_CLASSES);
+	p->ipcc_total_ticks++;
 
-	/*
-	 * SMT reliability filter: classes 0–1 (scalar/vector) are unreliable
-	 * when an SMT sibling is busy on the same physical core.  Skip the
-	 * reading in that case — the task keeps its previous class.
-	 */
-	if (new_ipcc <= 2) {
-		int cpu = smp_processor_id();
-		const struct cpumask *smt = topology_sibling_cpumask(cpu);
-		int sibling;
-
-		for_each_cpu(sibling, smt) {
-			if (sibling != cpu && !idle_cpu(sibling))
-				return;
-		}
+	switch (new_ipcc)
+	{
+		case 1:
+			p->ipcc_ticks_cls1++;
+			break;
+		default:
+			p->ipcc_ticks_cls2++;
 	}
 
-	/*
-	 * Require ITD_CLASS_STABILITY_TICKS consecutive identical readings
-	 * before committing to a new class.
-	 */
-	if (new_ipcc == p->ipcc_candidate) {
-		if (++p->ipcc_count >= ITD_CLASS_STABILITY_TICKS)
-			p->ipcc = new_ipcc;
-	} else {
-		p->ipcc_candidate = new_ipcc;
-		p->ipcc_count = 1;
+	if (p->ipcc_total_ticks >= 256) 
+	{
+		p->ipcc_ticks_cls1 >>= 1;
+		p->ipcc_ticks_cls2 >>= 1;
+		p->ipcc_total_ticks = 0;
 	}
+
+	unsigned int total = p->ipcc_ticks_cls1 + p->ipcc_ticks_cls2;
+	
+	if (total < 8)
+		p->ipcc = 0;  // poucos dados, não classificar
+	else if (p->ipcc_ticks_cls2 * 100 > total*10)  // >	10% vector
+		p->ipcc = 2;
+	else
+		p->ipcc = 1;
 }
 
 int arch_get_ipcc_score(unsigned short ipcc, int cpu)

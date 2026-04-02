@@ -9591,19 +9591,38 @@ static struct task_struct *detach_one_task(struct lb_env *env)
 
 	lockdep_assert_rq_held(env->src_rq);
 
+#ifdef CONFIG_IPC_CLASSES
+	/*
+	 * Push-based IPCC victim selection: when migrating from a high-priority
+	 * CPU (P-core) to a lower one (E-core), prefer to push unclassified
+	 * tasks (ipcc=0) first, then scalar (ipcc=1).  Tasks with higher IPCC
+	 * benefit more from P-cores and should stay.
+	 */
+	if (sched_asym_prefer(env->src_cpu, env->dst_cpu)) {
+		unsigned short target;
+
+		list_for_each_entry_reverse(p,
+				&env->src_rq->cfs_tasks, se.group_node) {
+			if (!can_migrate_task(p, env))
+				continue;
+			if (p->ipcc != 1)
+				continue;
+
+			detach_task(p, env);
+			schedstat_inc(env->sd->lb_gained[env->idle]);
+			return p;
+		}
+	
+	}
+#endif
+
+	/* Fallback: original behavior — first migratable task */
 	list_for_each_entry_reverse(p,
 			&env->src_rq->cfs_tasks, se.group_node) {
 		if (!can_migrate_task(p, env))
 			continue;
 
 		detach_task(p, env);
-
-		/*
-		 * Right now, this is only the second place where
-		 * lb_gained[env->idle] is updated (other is detach_tasks)
-		 * so we can safely collect stats here rather than
-		 * inside detach_tasks().
-		 */
 		schedstat_inc(env->sd->lb_gained[env->idle]);
 		return p;
 	}
@@ -9661,6 +9680,19 @@ static int detach_tasks(struct lb_env *env)
 
 		if (!can_migrate_task(p, env))
 			goto next;
+
+#ifdef CONFIG_IPC_CLASSES
+		/*
+		 * Protect vector tasks (ipcc=2) on P-cores regardless of
+		 * migration type.  Only skip if scalar/unclassified tasks
+		 * exist as alternatives; when none remain, cls2 migrates
+		 * normally to avoid overloading the P-core.
+		 */
+		if (sched_asym_prefer(env->src_cpu, env->dst_cpu) &&
+		    p->ipcc == 2 &&
+		    (env->src_rq->nr_ipcc[0] + env->src_rq->nr_ipcc[1]))
+			goto next;
+#endif
 
 		switch (env->migration_type) {
 		case migrate_load:
@@ -10566,16 +10598,11 @@ static inline void update_sg_lb_stats(struct lb_env *env,
 		sgs->avg_load = (sgs->group_load * SCHED_CAPACITY_SCALE) /
 				sgs->group_capacity;
 
-#ifdef CONFIG_IPC_CLASSES
-	/* Collect IPCC stats for asym_packing tiebreaking */
-	if (!local_group && (env->sd->flags & SD_ASYM_PACKING) &&
-	    sgs->sum_h_nr_running) {
-		update_sg_lb_ipcc_stats(sgs, group);
-		// trace_printk("ipcc_lb_stats: group_type=%u nr_running=%u class_mask=0x%x\n",
-			    //  sgs->group_type, sgs->sum_h_nr_running,
-			    //  sgs->ipcc_class_mask);
-	}
-#endif
+	/*
+	 * IPCC stats collection removed — tiebreaker was ineffective
+	 * (E-cores never classify, all masks identical).  IPCC-based
+	 * victim selection now happens in detach_tasks/detach_one_task.
+	 */
 }
 
 /**
@@ -10646,24 +10673,10 @@ static bool update_sd_pick_busiest(struct lb_env *env,
 				      READ_ONCE(sg->asym_prefer_cpu)))
 			return true;
 		/*
-		 * Same priority: use IPCC class mask as tiebreaker.
-		 * Prefer to pull from the group with higher-class tasks
-		 * (higher mask = has tasks that benefit more from P-core).
+		 * Same priority: no further distinction.  IPCC-based victim
+		 * selection happens in detach_tasks/detach_one_task instead.
 		 */
-#ifdef CONFIG_IPC_CLASSES
-		{
-			int sg_prio = ipcc_mask_pcore_prio(sgs->ipcc_class_mask);
-			int bu_prio = ipcc_mask_pcore_prio(busiest->ipcc_class_mask);
-
-			// trace_printk("ipcc_pick_busiest: sg_mask=0x%x(%d) busiest_mask=0x%x(%d) pick=%d\n",
-				    //  sgs->ipcc_class_mask, sg_prio,
-				    //  busiest->ipcc_class_mask, bu_prio,
-				    //  sg_prio > bu_prio);
-			return sg_prio > bu_prio;
-		}
-#else
 		return false;
-#endif
 
 	case group_misfit_task:
 		/*
