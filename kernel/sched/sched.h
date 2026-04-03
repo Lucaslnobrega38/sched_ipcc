@@ -3702,7 +3702,7 @@ static inline bool sched_energy_enabled(void)
 
 #define perf_domain_span(pd) NULL
 
-static inline bool sched_energy_enabled(void) { return false; }
+static inline bool sched_energy_enabled(void) {pr_info_ratelimited("CONFIG_ENERGY_MODEL ou CONFIG_CPU_FREQ_GOV_SCHEDUTIL NÂO DEFINIDOS"); ;return false; }
 
 #endif /* !(CONFIG_ENERGY_MODEL && CONFIG_CPU_FREQ_GOV_SCHEDUTIL) */
 

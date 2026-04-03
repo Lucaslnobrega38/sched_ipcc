@@ -191,6 +191,44 @@ static void hfi_itmt_work_fn(struct work_struct *work)
 static DECLARE_WORK(hfi_itmt_work, hfi_itmt_work_fn);
 static bool hfi_itmt_done;
 
+/*
+#define HFI_LOG_INTERVAL_MS		5000
+
+static void hfi_log_caps_work_fn(struct work_struct *work);
+static DECLARE_DELAYED_WORK(hfi_log_caps_work, hfi_log_caps_work_fn);
+
+static void hfi_log_caps_work_fn(struct work_struct *work)
+{
+	int i, cpu;
+
+	for (i = 0; i < max_hfi_instances; i++) {
+		struct hfi_instance *hfi_instance = &hfi_instances[i];
+
+		if (!hfi_instance->data)
+			continue;
+
+		raw_spin_lock_irq(&hfi_instance->table_lock);
+		for_each_cpu(cpu, hfi_instance->cpus) {
+			struct hfi_cpu_data *caps;
+			s16 index;
+
+			index = per_cpu(hfi_cpu_info, cpu).index;
+			if (index < 0)
+				continue;
+
+			caps = hfi_instance->data + index * hfi_features.cpu_stride;
+			pr_info("hfi_caps: cpu=%d perf_cap=%u ee_cap=%u\n",
+				cpu, caps->perf_cap, caps->ee_cap);
+		}
+		raw_spin_unlock_irq(&hfi_instance->table_lock);
+	}
+
+	schedule_delayed_work(&hfi_log_caps_work,
+			      msecs_to_jiffies(HFI_LOG_INTERVAL_MS));
+}
+				  
+*/
+
 static void get_hfi_caps(struct hfi_instance *hfi_instance,
 			 struct thermal_genl_cpu_caps *cpu_caps)
 {
@@ -771,6 +809,9 @@ void __init intel_hfi_init(void)
 	if (!hfi_updates_wq)
 		goto err_nomem;
 
+	schedule_delayed_work(&hfi_log_caps_work,
+			      msecs_to_jiffies(HFI_LOG_INTERVAL_MS));
+
 	/*
 	 * Both thermal core and Intel HFI can not be build as modules.
 	 * As kernel build-in drivers they are initialized before user-space
@@ -791,6 +832,7 @@ void __init intel_hfi_init(void)
 	return;
 
 err_nl_notif:
+	cancel_delayed_work_sync(&hfi_log_caps_work);
 	destroy_workqueue(hfi_updates_wq);
 
 err_nomem:

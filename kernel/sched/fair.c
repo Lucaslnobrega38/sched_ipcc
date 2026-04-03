@@ -8359,11 +8359,14 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu)
 	struct sched_domain *sd;
 	struct perf_domain *pd;
 	struct energy_env eenv;
+	//pr_info("rodando eas com pstate ativo");
 
 	rcu_read_lock();
 	pd = rcu_dereference_all(rd->pd);
-	if (!pd)
+	if (!pd) {
+		//pr_info("feec: early return — no perf_domain (rd->pd == NULL)\n");
 		goto unlock;
+	}
 
 	/*
 	 * Energy-aware wake-up happens on the lowest sched_domain starting
@@ -8372,14 +8375,18 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu)
 	sd = rcu_dereference_all(*this_cpu_ptr(&sd_asym_cpucapacity));
 	while (sd && !cpumask_test_cpu(prev_cpu, sched_domain_span(sd)))
 		sd = sd->parent;
-	if (!sd)
+	if (!sd) {
+		//pr_info("feec: early return — no sd_asym_cpucapacity covering prev_cpu=%d\n",prev_cpu);
 		goto unlock;
+	}
 
 	target = prev_cpu;
 
 	sync_entity_load_avg(&p->se);
-	if (!task_util_est(p) && p_util_min == 0)
+	if (!task_util_est(p) && p_util_min == 0) {
+		//pr_info("feec: early return — task util=0 and p_util_min=0 (task=%s)\n",p->comm);
 		goto unlock;
+	}
 
 	eenv_task_busy_time(&eenv, p, prev_cpu);
 
@@ -8473,8 +8480,10 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu)
 			prev_delta = compute_energy(&eenv, pd, cpus, p,
 						    prev_cpu);
 			/* CPU utilization has changed */
-			if (prev_delta < base_energy)
+			if (prev_delta < base_energy) {
+				// pr_info("feec: early return — util changed during eval (prev_cpu=%d, task=%s)\n",prev_cpu, p->comm);
 				goto unlock;
+			}
 			prev_delta -= base_energy;
 			prev_actual_cap = cpu_actual_cap;
 			best_delta = min(best_delta, prev_delta);
@@ -8497,17 +8506,24 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu)
 			cur_delta = compute_energy(&eenv, pd, cpus, p,
 						   max_spare_cap_cpu);
 			/* CPU utilization has changed */
-			if (cur_delta < base_energy)
+			if (cur_delta < base_energy) {
+				// pr_info("feec: early return — util changed during eval (max_spare_cap_cpu=%d, task=%s)\n",max_spare_cap_cpu, p->comm);
 				goto unlock;
+			}
 			cur_delta -= base_energy;
 
 			/*
 			 * Both fit for the task but best energy cpu has lower
 			 * energy impact.
 			 */
+
+			// pr_info("feec: prev_delta:%d,cur_delta:%d,prev_cpu:%d,cur_cpu:%d\n",prev_delta,cur_delta,prev_cpu,max_spare_cap_cpu);
+
 			if ((max_fits > 0) && (best_fits > 0) &&
-			    (cur_delta >= best_delta))
+			    (cur_delta >= best_delta))	
 				continue;
+			
+			// pr_info("feec ACEITO: prev_delta:%d,cur_delta:%d,prev_cpu:%d,cur_cpu:%d\n",prev_delta,cur_delta,prev_cpu,max_spare_cap_cpu);
 
 			best_delta = cur_delta;
 			best_energy_cpu = max_spare_cap_cpu;
@@ -8522,11 +8538,13 @@ static int find_energy_efficient_cpu(struct task_struct *p, int prev_cpu)
 	    ((best_fits < 0) && (best_actual_cap > prev_actual_cap)))
 		target = best_energy_cpu;
 
+	//pr_info("feec: normal return — target=%d best_delta=%lu prev_delta=%lu task=%s\n",target, best_delta, prev_delta, p->comm);
 	return target;
 
 unlock:
 	rcu_read_unlock();
 
+	//pr_info("feec: unlock return — target=%d task=%s\n", target, p->comm);
 	return target;
 }
 
@@ -8563,8 +8581,9 @@ select_task_rq_fair(struct task_struct *p, int prev_cpu, int wake_flags)// mudar
 		    cpumask_test_cpu(cpu, p->cpus_ptr))
 			return cpu;
 
+
 		if (!is_rd_overutilized(this_rq()->rd)) { // aqui dá pra fazer distinção entre o caminho de p tasks e e tasks com confiança, já que o sistema ta de boa
-		
+
 			new_cpu = find_energy_efficient_cpu(p,prev_cpu);
 
 			if (new_cpu >= 0)

@@ -1143,8 +1143,10 @@ static void hybrid_refresh_cpu_capacity_scaling(void)
 static void hybrid_init_cpu_capacity_scaling(bool refresh)
 {
 	/* Bail out if enabling capacity-aware scheduling is prohibited. */
-	if (no_cas)
+	if (no_cas) {
+		pr_info("hybrid_init: blocked by no_cas\n");
 		return;
+	}
 
 	/*
 	 * If hybrid_max_perf_cpu is set at this point, the hybrid CPU capacity
@@ -1152,9 +1154,13 @@ static void hybrid_init_cpu_capacity_scaling(bool refresh)
 	 * operation mode.
 	 */
 	if (refresh) {
+		pr_info("hybrid_init: refresh path\n");
 		hybrid_refresh_cpu_capacity_scaling();
 		return;
 	}
+
+	pr_info("hybrid_init: hwp_is_hybrid=%d cpu_smt_possible=%d\n",
+		hwp_is_hybrid, cpu_smt_possible());
 
 	/*
 	 * On hybrid systems, use asym capacity instead of ITMT, but because
@@ -1162,6 +1168,7 @@ static void hybrid_init_cpu_capacity_scaling(bool refresh)
 	 * do not do that when SMT is in use.
 	 */
 	if (hwp_is_hybrid && !cpu_smt_possible() && arch_enable_hybrid_capacity_scale()) {
+		pr_info("hybrid_init: enabling EAS + asym capacity\n");
 		hybrid_refresh_cpu_capacity_scaling();
 		/*
 		 * Disabling ITMT causes sched domains to be rebuilt to disable asym
